@@ -4,7 +4,8 @@ Self-study program for drawing the Mandelbrot set.
 
 This code based on the "[pixels](https://github.com/parasyte/pixels)" sample code.
 
-
+<img src="image/IMG-2021-06-22-18-36-07.png" width="320">
+<img src="image/IMG-2021-06-22-18-37-06.png" width="320">
 
 ## Run
 
