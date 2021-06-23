@@ -2,7 +2,7 @@ use env_logger;
 use log::{error, info};
 use pixels::{Error, Pixels, SurfaceTexture};
 use std::time::Instant;
-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
+use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{Event, VirtualKeyCode};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
@@ -32,6 +32,12 @@ impl Mandelbrot {
         self.drawn = false;
     }
 
+    fn move_center(&mut self, x: f64, y: f64) {
+        self.center_x += x * self.scale;
+        self.center_y += y * self.scale;
+        info!("center ({}, {})", self.center_x, self.center_y);
+    }
+
     fn set_center(&mut self, x: f64, y: f64) {
         self.center_x += (x - (WINDOW_WIDTH as f64 / 2.0)) * self.scale;
         self.center_y += ((WINDOW_HEIGHT as f64 / 2.0) - y) * self.scale;
@@ -39,14 +45,14 @@ impl Mandelbrot {
     }
 
     fn zoom(&mut self, in_out: f64) {
-        self.scale = self.scale * 2.0_f64.powf(-1.005 * in_out);
+        self.scale = self.scale * 1.07_f64.powf(-1.0 * in_out);
         info!("scale {}", self.scale);
     }
 
     fn reset(&mut self) {
         self.drawn = false;
-        self.center_x = -0.10;
-        self.center_y = -0.0;
+        self.center_x = 0.0;
+        self.center_y = 0.0;
         self.scale = 0.005;
     }
 
@@ -92,7 +98,6 @@ impl Mandelbrot {
             let max_round = 128;
             let rgba = match self.check_divergence(x, y, max_round) {
                 Some(round) => {
-                    //info!("({},{}) {}", x, y, round);
                     if round <= u8::MAX as u32 {
                         [0x00, ((round * 2) as u8), 0x80, 0xff]
                     } else {
@@ -136,6 +141,9 @@ fn main() -> Result<(), Error> {
     };
 
     let mut mandelbrot = Mandelbrot::new();
+    let mut pressed_p_pos = PhysicalPosition::new(0.0, 0.0);
+    let mut pressed_time = Instant::now();
+    let mut dobule_clicked = false;
 
     event_loop.run(move |event, _, control_flow| {
         if let Event::RedrawRequested(_) = event {
@@ -165,15 +173,38 @@ fn main() -> Result<(), Error> {
                 mandelbrot.request_redraw();
             }
 
-            if input.mouse_released(0) {
+            if input.mouse_pressed(0) {
                 if let Some((x, y)) = input.mouse() {
-                    let scale_factor = window.scale_factor();
-                    info!("mouse pos: ({}, {}) scale_factor {}", x, y, scale_factor);
-                    let p_pos = PhysicalPosition::new(x, y);
-                    let l_pos: LogicalPosition<f64> = p_pos.to_logical(scale_factor);
-                    info!("logical pos: ({}, {})", l_pos.x, l_pos.y);
-                    mandelbrot.set_center(l_pos.x, l_pos.y);
-                    mandelbrot.request_redraw();
+                    let click_interval = pressed_time.elapsed().as_millis();
+                    info!("click interval {}", click_interval);
+                    if pressed_time.elapsed().as_millis() < 700 {
+                        dobule_clicked = true;
+                        info!("double clicked");
+                        let scale_factor = window.scale_factor();
+                        let center_p_pos = PhysicalPosition::new(x, y);
+                        let new_center = center_p_pos.to_logical(scale_factor);
+                        mandelbrot.set_center(new_center.x, new_center.y);
+                        mandelbrot.request_redraw();
+                    } else {
+                        dobule_clicked = false;
+                        pressed_p_pos.x = x;
+                        pressed_p_pos.y = y;
+                    }
+                    pressed_time = Instant::now();
+                }
+            }
+
+            if input.mouse_released(0) {
+                if dobule_clicked == false {
+                    if let Some((x, y)) = input.mouse() {
+                        let scale_factor = window.scale_factor();
+                        let released_p_pos = PhysicalPosition::new(x, y);
+                        let drag_vector = PhysicalPosition::new(pressed_p_pos.x - released_p_pos.x, -1.0 * (pressed_p_pos.y - released_p_pos.y));
+                        info!("drag: ({}, {})", drag_vector.x, drag_vector.y);
+                        let center_offset = drag_vector.to_logical(scale_factor);
+                        mandelbrot.move_center(center_offset.x, center_offset.y);
+                        mandelbrot.request_redraw();
+                    }
                 }
             }
 
