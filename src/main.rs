@@ -7,6 +7,7 @@ use winit::event::{Event, VirtualKeyCode};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 use winit_input_helper::WinitInputHelper;
+use rayon::prelude::*;
 
 const WINDOW_WIDTH: u32 = 640;
 const WINDOW_HEIGHT: u32 = 480;
@@ -91,24 +92,25 @@ impl Mandelbrot {
         let min_x = self.center_x - ((self.scale * WINDOW_WIDTH as f64) / 2.0);
         let max_y = self.center_y + ((self.scale * WINDOW_HEIGHT as f64) / 2.0);
 
-        for (i, pixel) in frame.chunks_exact_mut(4).enumerate() {
+        frame.par_chunks_exact_mut(4).enumerate().for_each(|(i, pixel)| {
             let x = min_x + ((i % WINDOW_WIDTH as usize) as f64) * self.scale;
             let y = max_y - ((i / WINDOW_WIDTH as usize) as f64) * self.scale;
 
-            let max_round = 128;
+            let max_round = 512;
             let rgba = match self.check_divergence(x, y, max_round) {
                 Some(round) => {
                     if round <= u8::MAX as u32 {
-                        [0x00, ((round * 2) as u8), 0x80, 0xff]
+                        [0x00, (round as u8), 0x80, 0xff]
                     } else {
-                        [0x00, 0xff, 0x80, 0xff]
+                        let red = (round & 0xff) as u8;
+                        [red, 0xff, 0x80, 0xff]
                     }
                 }
                 None => [0x00, 0x00, 0x00, 0xff],
             };
 
             pixel.copy_from_slice(&rgba);
-        }
+        });
         let end = start.elapsed();
         info!(
             "drawing time {}.{:04}[sec]",
