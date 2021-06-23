@@ -2,7 +2,7 @@ use env_logger;
 use log::{error, info};
 use pixels::{Error, Pixels, SurfaceTexture};
 use std::time::Instant;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{Event, VirtualKeyCode};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
@@ -22,7 +22,6 @@ impl Mandelbrot {
     fn new() -> Self {
         Self {
             drawn: false,
-            //center_x: 0.250,
             center_x: -0.10,
             center_y: 0.0,
             scale: 0.005,
@@ -168,8 +167,12 @@ fn main() -> Result<(), Error> {
 
             if input.mouse_released(0) {
                 if let Some((x, y)) = input.mouse() {
-                    info!("mouse pos: ({}, {})", x, y);
-                    mandelbrot.set_center(x as f64, y as f64);
+                    let scale_factor = window.scale_factor();
+                    info!("mouse pos: ({}, {}) scale_factor {}", x, y, scale_factor);
+                    let p_pos = PhysicalPosition::new(x, y);
+                    let l_pos: LogicalPosition<f64> = p_pos.to_logical(scale_factor);
+                    info!("logical pos: ({}, {})", l_pos.x, l_pos.y);
+                    mandelbrot.set_center(l_pos.x, l_pos.y);
                     mandelbrot.request_redraw();
                 }
             }
