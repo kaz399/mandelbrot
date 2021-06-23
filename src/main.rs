@@ -65,8 +65,8 @@ impl Mandelbrot {
             xn = xn_1_power - yn_1_power + pos_x;
             yn = 2.0 * xn_1 * yn_1 + pos_y;
 
-            xn_1_power = xn.powf(2.0);
-            yn_1_power = yn.powf(2.0);
+            xn_1_power = xn * xn;
+            yn_1_power = yn * yn;
 
             if (xn_1_power + yn_1_power) >= 4.0 {
                 return Some(round);
@@ -80,7 +80,7 @@ impl Mandelbrot {
         if self.drawn {
             return;
         }
-        info!("draw start");
+
         let start = Instant::now();
 
         let min_x = self.center_x - ((self.scale * WINDOW_WIDTH as f64) / 2.0);
@@ -107,7 +107,7 @@ impl Mandelbrot {
         }
         let end = start.elapsed();
         info!(
-            "elapsed time {}.{:04}[sec]",
+            "drawing time {}.{:04}[sec]",
             end.as_secs(),
             end.subsec_nanos() / 1000000
         );
