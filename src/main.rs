@@ -21,6 +21,8 @@ struct Mandelbrot {
     max_round: usize,
     info: bool,
     rendering_time: Duration,
+    min_scale: f64,
+    max_scale: f64,
 }
 
 impl Mandelbrot {
@@ -33,6 +35,8 @@ impl Mandelbrot {
             max_round: 512,
             info: true,
             rendering_time: Duration::ZERO,
+            min_scale: f64::EPSILON,
+            max_scale: 0.1,
         }
     }
 
@@ -52,10 +56,21 @@ impl Mandelbrot {
         info!("center ({}, {})", self.center_x, self.center_y);
     }
 
-    fn zoom(&mut self, in_out: f64) {
+    fn zoom(&mut self, in_out: f64) -> bool {
         self.scale = self.scale * 1.07_f64.powf(-1.0 * in_out);
         self.max_round = if self.scale > 0.000005 { 512 } else { 1024 };
         info!("scale {}, max_round {}", self.scale, self.max_round);
+
+        if self.scale > self.max_scale {
+            self.scale = self.max_scale;
+            return false;
+        }
+        if self.scale < self.min_scale {
+            info!("scale is smaller than machine epsilon: {}", self.scale);
+            self.scale = self.min_scale;
+            return false;
+        }
+        true
     }
 
     fn reset(&mut self) {
@@ -66,6 +81,8 @@ impl Mandelbrot {
         self.max_round = 512;
         self.info = true;
         self.rendering_time = Duration::ZERO;
+        self.min_scale = f64::EPSILON;
+        self.max_scale = 0.1;
     }
 
     fn check_divergence(&self, pos_x: f64, pos_y: f64, max_round: usize) -> Option<usize> {
@@ -146,8 +163,8 @@ impl Mandelbrot {
     }
 
     fn round_to_color(&self, round: usize) -> [u8; 4] {
-        let section_size = 256;
-        let color_table = [
+        let section_size = 256_usize;
+        let color_table: [(usize, usize, usize); 5] = [
             (0x00, 0x00, 0x80),
             (0x00, 0xff, 0x00),
             (0xff, 0xff, 0x00),
@@ -161,13 +178,13 @@ impl Mandelbrot {
 
         let (r0, g0, b0) = color_table[table_number];
         let (r1, g1, b1) = color_table[table_number + 1];
+        let interporation = |a, b| {
+            (((a * (section_size - color_index) + b * color_index) / section_size) & 0xff) as u8
+        };
 
-        let r =
-            (((r0 * (section_size - color_index) + r1 * color_index) / section_size) & 0xff) as u8;
-        let g =
-            (((g0 * (section_size - color_index) + g1 * color_index) / section_size) & 0xff) as u8;
-        let b =
-            (((b0 * (section_size - color_index) + b1 * color_index) / section_size) & 0xff) as u8;
+        let r = interporation(r0, r1);
+        let g = interporation(g0, g1);
+        let b = interporation(b0, b1);
 
         [r, g, b, 0xff]
     }
@@ -233,9 +250,13 @@ fn main() -> Result<(), Error> {
     };
 
     let mut mandelbrot = Mandelbrot::new();
-    let mut pressed_p_pos = PhysicalPosition::new(0.0, 0.0);
+    let mut pressed_pos_x = 0.0;
+    let mut pressed_pos_y = 0.0;
     let mut pressed_time = Instant::now();
     let mut dobule_clicked = false;
+    let mut shiftkey_pressed = false;
+    let mut altkey_pressed = false;
+    let mut auto_zoom_param = 0.0;
 
     event_loop.run(move |event, _, control_flow| {
         if let Event::RedrawRequested(_) = event {
@@ -251,7 +272,7 @@ fn main() -> Result<(), Error> {
         }
 
         if input.update(&event) {
-            if input.key_pressed(VirtualKeyCode::Escape) || input.quit() {
+            if input.key_pressed(VirtualKeyCode::Q) || input.quit() {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
@@ -261,6 +282,7 @@ fn main() -> Result<(), Error> {
             }
 
             if input.key_pressed(VirtualKeyCode::Space) {
+                auto_zoom_param = 0.0;
                 mandelbrot.reset();
                 mandelbrot.request_redraw();
             }
@@ -269,18 +291,18 @@ fn main() -> Result<(), Error> {
                 if let Some((x, y)) = input.mouse() {
                     let click_interval = pressed_time.elapsed().as_millis();
                     info!("click interval {}", click_interval);
+                    let (pixel_x, pixel_y) = pixels
+                        .window_pos_to_pixel((x, y))
+                        .unwrap_or_else(|pos| pixels.clamp_pixel_pos(pos));
                     if pressed_time.elapsed().as_millis() < 700 {
                         dobule_clicked = true;
                         info!("double clicked");
-                        let scale_factor = window.scale_factor();
-                        let center_p_pos = PhysicalPosition::new(x, y);
-                        let new_center = center_p_pos.to_logical(scale_factor);
-                        mandelbrot.set_center(new_center.x, new_center.y);
+                        mandelbrot.set_center(pixel_x as f64, pixel_y as f64);
                         mandelbrot.request_redraw();
                     } else {
                         dobule_clicked = false;
-                        pressed_p_pos.x = x;
-                        pressed_p_pos.y = y;
+                        pressed_pos_x = pixel_x as f64;
+                        pressed_pos_y = pixel_y as f64;
                     }
                     pressed_time = Instant::now();
                 }
@@ -289,15 +311,15 @@ fn main() -> Result<(), Error> {
             if input.mouse_released(0) {
                 if dobule_clicked == false {
                     if let Some((x, y)) = input.mouse() {
-                        let scale_factor = window.scale_factor();
-                        let released_p_pos = PhysicalPosition::new(x, y);
-                        let drag_vector = PhysicalPosition::new(
-                            pressed_p_pos.x - released_p_pos.x,
-                            -1.0 * (pressed_p_pos.y - released_p_pos.y),
+                        let (released_pos_x, released_pos_y) = pixels
+                            .window_pos_to_pixel((x, y))
+                            .unwrap_or_else(|pos| pixels.clamp_pixel_pos(pos));
+                        let (drag_vector_x, drag_vector_y) = (
+                            pressed_pos_x - released_pos_x as f64,
+                            -1.0 * (pressed_pos_y - released_pos_y as f64),
                         );
-                        info!("drag: ({}, {})", drag_vector.x, drag_vector.y);
-                        let center_offset = drag_vector.to_logical(scale_factor);
-                        mandelbrot.move_center(center_offset.x, center_offset.y);
+                        info!("drag: ({}, {})", drag_vector_x, drag_vector_y);
+                        mandelbrot.move_center(drag_vector_x, drag_vector_y);
                         mandelbrot.request_redraw();
                     }
                 }
@@ -310,12 +332,49 @@ fn main() -> Result<(), Error> {
                 mandelbrot.request_redraw();
             }
 
-            if input.key_pressed(VirtualKeyCode::PageUp) {
-                mandelbrot.zoom(0.5);
-                mandelbrot.request_redraw();
+            if input.key_pressed(VirtualKeyCode::LShift) {
+                shiftkey_pressed = true;
+            } else if input.key_released(VirtualKeyCode::LShift) {
+                shiftkey_pressed = false;
+            }
+
+            if input.key_pressed(VirtualKeyCode::LAlt) {
+                altkey_pressed = true;
+            } else if input.key_released(VirtualKeyCode::LAlt) {
+                altkey_pressed = false;
+            }
+
+            let calc_zoom_param = |direction: f64| {
+                if altkey_pressed {
+                    (0.2 * direction, true)
+                } else if auto_zoom_param != 0.0 {
+                    (0.0, true)
+                } else if shiftkey_pressed {
+                    (0.1 * direction, false)
+                } else {
+                    (3.0 * direction, false)
+                }
+            };
+
+            let (zoom_param, auto_zoom_update) = if input.key_pressed(VirtualKeyCode::PageUp) {
+                calc_zoom_param(1.0)
             } else if input.key_pressed(VirtualKeyCode::PageDown) {
-                mandelbrot.zoom(-0.5);
+                calc_zoom_param(-1.0)
+            } else {
+                (auto_zoom_param, false)
+            };
+            if zoom_param != 0.0 {
+                let zoom_result = mandelbrot.zoom(zoom_param);
+                if zoom_result == false {
+                    auto_zoom_param = 0.0;
+                }
                 mandelbrot.request_redraw();
+            }
+
+            if input.key_pressed(VirtualKeyCode::Escape) {
+                auto_zoom_param = 0.0;
+            } else if auto_zoom_update {
+                auto_zoom_param = zoom_param;
             }
 
             let (key_move, move_x, move_y) =
@@ -336,7 +395,6 @@ fn main() -> Result<(), Error> {
                 } else {
                     (false, 0.0, 0.0)
                 };
-
             if key_move {
                 let scale_factor = window.scale_factor();
                 let center_p_pos = PhysicalPosition::new(move_x, move_y);
