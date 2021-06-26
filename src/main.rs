@@ -346,7 +346,7 @@ fn main() -> Result<(), Error> {
 
             let calc_zoom_param = |direction: f64| {
                 if altkey_pressed {
-                    (0.2 * direction, true)
+                    (0.4 * direction, true)
                 } else if auto_zoom_param != 0.0 {
                     (0.0, true)
                 } else if shiftkey_pressed {
