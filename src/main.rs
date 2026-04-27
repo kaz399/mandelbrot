@@ -1,13 +1,32 @@
-use env_logger;
+// Copyright 2026 Yabe Kazuhiro
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+// and associated documentation files (the “Software”), to deal in the Software without
+// restriction, including without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+// NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use log::{error, info};
 use pixels::{Error, Pixels, SurfaceTexture};
 use rayon::prelude::*;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{Event, VirtualKeyCode};
-use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::WindowBuilder;
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
+use winit::event::{DeviceEvent, DeviceId, MouseButton, StartCause, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::KeyCode;
+use winit::window::{Window, WindowId};
 use winit_input_helper::WinitInputHelper;
 
 const WINDOW_WIDTH: u32 = 640;
@@ -229,198 +248,289 @@ impl Mandelbrot {
     }
 }
 
-fn main() -> Result<(), Error> {
-    env_logger::init();
-    let event_loop = EventLoop::new();
-    let mut input = WinitInputHelper::new();
-    let window = {
+struct App {
+    input: WinitInputHelper,
+    window: Option<Arc<Window>>,
+    pixels: Option<Pixels<'static>>,
+    mandelbrot: Mandelbrot,
+    pressed_pos_x: f64,
+    pressed_pos_y: f64,
+    pressed_time: Instant,
+    double_clicked: bool,
+    shiftkey_pressed: bool,
+    altkey_pressed: bool,
+    auto_zoom_param: f64,
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            input: WinitInputHelper::new(),
+            window: None,
+            pixels: None,
+            mandelbrot: Mandelbrot::new(),
+            pressed_pos_x: 0.0,
+            pressed_pos_y: 0.0,
+            pressed_time: Instant::now(),
+            double_clicked: false,
+            shiftkey_pressed: false,
+            altkey_pressed: false,
+            auto_zoom_param: 0.0,
+        }
+    }
+
+    fn create_window(event_loop: &ActiveEventLoop) -> Window {
         let size = LogicalSize::new(WINDOW_WIDTH as f64, WINDOW_HEIGHT as f64);
-        WindowBuilder::new()
-            .with_title("Mandelbrot")
-            .with_inner_size(size)
-            .with_min_inner_size(size)
-            .build(&event_loop)
+        event_loop
+            .create_window(
+                Window::default_attributes()
+                    .with_title("Mandelbrot")
+                    .with_inner_size(size)
+                    .with_min_inner_size(size),
+            )
             .unwrap()
-    };
+    }
 
-    let mut pixels = {
-        let window_size = window.inner_size();
-        let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
-        Pixels::new(WINDOW_WIDTH, WINDOW_HEIGHT, surface_texture)?
-    };
+    fn render(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(pixels) = self.pixels.as_mut() else {
+            return;
+        };
 
-    let mut mandelbrot = Mandelbrot::new();
-    let mut pressed_pos_x = 0.0;
-    let mut pressed_pos_y = 0.0;
-    let mut pressed_time = Instant::now();
-    let mut dobule_clicked = false;
-    let mut shiftkey_pressed = false;
-    let mut altkey_pressed = false;
-    let mut auto_zoom_param = 0.0;
+        self.mandelbrot.draw(pixels.frame_mut());
+        if pixels
+            .render()
+            .map_err(|e| error!("pixels.render() failed: {}", e))
+            .is_err()
+        {
+            event_loop.exit();
+        }
+    }
 
-    event_loop.run(move |event, _, control_flow| {
-        if let Event::RedrawRequested(_) = event {
-            mandelbrot.draw(pixels.get_frame());
-            if pixels
-                .render()
-                .map_err(|e| error!("pixels.render() failed: {}", e))
-                .is_err()
-            {
-                *control_flow = ControlFlow::Exit;
-                return;
+    fn update(&mut self, event_loop: &ActiveEventLoop) {
+        self.input.end_step();
+
+        if self.input.key_pressed(KeyCode::KeyQ)
+            || self.input.close_requested()
+            || self.input.destroyed()
+        {
+            event_loop.exit();
+            return;
+        }
+
+        if let Some(size) = self.input.window_resized() {
+            if let Some(pixels) = self.pixels.as_mut() {
+                if let Err(e) = pixels.resize_surface(size.width, size.height) {
+                    error!("pixels.resize_surface() failed: {}", e);
+                    event_loop.exit();
+                    return;
+                }
             }
         }
 
-        if input.update(&event) {
-            if input.key_pressed(VirtualKeyCode::Q) || input.quit() {
-                *control_flow = ControlFlow::Exit;
-                return;
-            }
+        if self.input.key_pressed(KeyCode::Space) {
+            self.auto_zoom_param = 0.0;
+            self.mandelbrot.reset();
+            self.mandelbrot.request_redraw();
+        }
 
-            if let Some(size) = input.window_resized() {
-                pixels.resize_surface(size.width, size.height);
-            }
+        self.update_mouse();
+        self.update_zoom();
+        self.update_keyboard_move();
+        self.update_info();
 
-            if input.key_pressed(VirtualKeyCode::Space) {
-                auto_zoom_param = 0.0;
-                mandelbrot.reset();
-                mandelbrot.request_redraw();
-            }
-
-            if input.mouse_pressed(0) {
-                if let Some((x, y)) = input.mouse() {
-                    let click_interval = pressed_time.elapsed().as_millis();
-                    info!("click interval {}", click_interval);
-                    let (pixel_x, pixel_y) = pixels
-                        .window_pos_to_pixel((x, y))
-                        .unwrap_or_else(|pos| pixels.clamp_pixel_pos(pos));
-                    if pressed_time.elapsed().as_millis() < 700 {
-                        dobule_clicked = true;
-                        info!("double clicked");
-                        mandelbrot.set_center(pixel_x as f64, pixel_y as f64);
-                        mandelbrot.request_redraw();
-                    } else {
-                        dobule_clicked = false;
-                        pressed_pos_x = pixel_x as f64;
-                        pressed_pos_y = pixel_y as f64;
-                    }
-                    pressed_time = Instant::now();
-                }
-            }
-
-            if input.mouse_released(0) {
-                if dobule_clicked == false {
-                    if let Some((x, y)) = input.mouse() {
-                        let (released_pos_x, released_pos_y) = pixels
-                            .window_pos_to_pixel((x, y))
-                            .unwrap_or_else(|pos| pixels.clamp_pixel_pos(pos));
-                        let (drag_vector_x, drag_vector_y) = (
-                            pressed_pos_x - released_pos_x as f64,
-                            -1.0 * (pressed_pos_y - released_pos_y as f64),
-                        );
-                        info!("drag: ({}, {})", drag_vector_x, drag_vector_y);
-                        mandelbrot.move_center(drag_vector_x, drag_vector_y);
-                        mandelbrot.request_redraw();
-                    }
-                }
-            }
-
-            let scroll_diff = input.scroll_diff();
-            if scroll_diff.abs() != 0.0 {
-                info!("scroll: {}", scroll_diff);
-                mandelbrot.zoom(scroll_diff as f64);
-                mandelbrot.request_redraw();
-            }
-
-            if input.key_pressed(VirtualKeyCode::LShift) {
-                shiftkey_pressed = true;
-            } else if input.key_released(VirtualKeyCode::LShift) {
-                shiftkey_pressed = false;
-            }
-
-            if input.key_pressed(VirtualKeyCode::LAlt) {
-                altkey_pressed = true;
-            } else if input.key_released(VirtualKeyCode::LAlt) {
-                altkey_pressed = false;
-            }
-
-            let calc_zoom_param = |direction: f64| {
-                if altkey_pressed {
-                    (0.4 * direction, true)
-                } else if auto_zoom_param != 0.0 {
-                    (0.0, true)
-                } else if shiftkey_pressed {
-                    (0.1 * direction, false)
-                } else {
-                    (3.0 * direction, false)
-                }
-            };
-
-            let (zoom_param, auto_zoom_update) = if input.key_pressed(VirtualKeyCode::PageUp) {
-                calc_zoom_param(1.0)
-            } else if input.key_pressed(VirtualKeyCode::PageDown) {
-                calc_zoom_param(-1.0)
-            } else {
-                (auto_zoom_param, false)
-            };
-            if zoom_param != 0.0 {
-                let zoom_result = mandelbrot.zoom(zoom_param);
-                if zoom_result == false {
-                    auto_zoom_param = 0.0;
-                }
-                mandelbrot.request_redraw();
-            }
-
-            if input.key_pressed(VirtualKeyCode::Escape) {
-                auto_zoom_param = 0.0;
-            } else if auto_zoom_update {
-                auto_zoom_param = zoom_param;
-            }
-
-            let (key_move, move_x, move_y) =
-                if input.key_pressed(VirtualKeyCode::Up) || input.key_pressed(VirtualKeyCode::K) {
-                    (true, 0.0, 10.0)
-                } else if input.key_pressed(VirtualKeyCode::Down)
-                    || input.key_pressed(VirtualKeyCode::J)
-                {
-                    (true, 0.0, -10.0)
-                } else if input.key_pressed(VirtualKeyCode::Left)
-                    || input.key_pressed(VirtualKeyCode::H)
-                {
-                    (true, -10.0, 0.0)
-                } else if input.key_pressed(VirtualKeyCode::Right)
-                    || input.key_pressed(VirtualKeyCode::L)
-                {
-                    (true, 10.0, 0.0)
-                } else {
-                    (false, 0.0, 0.0)
-                };
-            if key_move {
-                let scale_factor = window.scale_factor();
-                let center_p_pos = PhysicalPosition::new(move_x, move_y);
-                let center_offset = center_p_pos.to_logical(scale_factor);
-                mandelbrot.move_center(center_offset.x, center_offset.y);
-                mandelbrot.request_redraw();
-            }
-
-            if input.key_pressed(VirtualKeyCode::I) {
-                mandelbrot.info = !mandelbrot.info;
-                mandelbrot.request_redraw();
-            }
-
-            if input.key_pressed(VirtualKeyCode::D) {
-                println!();
-                println!("x: {}", mandelbrot.center_x);
-                println!("y: {}", mandelbrot.center_y);
-                println!("scale: {}", mandelbrot.scale);
-                println!(
-                    "rendering time: {}.{:04}[sec]",
-                    mandelbrot.rendering_time.as_secs(),
-                    mandelbrot.rendering_time.subsec_nanos() / 1000000
-                );
-            }
-
+        if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
-    });
+    }
+
+    fn cursor_pixel(&self) -> Option<(usize, usize)> {
+        let pixels = self.pixels.as_ref()?;
+        let cursor = self.input.cursor()?;
+        Some(
+            pixels
+                .window_pos_to_pixel(cursor)
+                .unwrap_or_else(|pos| pixels.clamp_pixel_pos(pos)),
+        )
+    }
+
+    fn update_mouse(&mut self) {
+        if self.input.mouse_pressed(MouseButton::Left) {
+            if let Some((pixel_x, pixel_y)) = self.cursor_pixel() {
+                let click_interval = self.pressed_time.elapsed().as_millis();
+                info!("click interval {}", click_interval);
+                if click_interval < 700 {
+                    self.double_clicked = true;
+                    info!("double clicked");
+                    self.mandelbrot.set_center(pixel_x as f64, pixel_y as f64);
+                    self.mandelbrot.request_redraw();
+                } else {
+                    self.double_clicked = false;
+                    self.pressed_pos_x = pixel_x as f64;
+                    self.pressed_pos_y = pixel_y as f64;
+                }
+                self.pressed_time = Instant::now();
+            }
+        }
+
+        if self.input.mouse_released(MouseButton::Left) && !self.double_clicked {
+            if let Some((released_pos_x, released_pos_y)) = self.cursor_pixel() {
+                let (drag_vector_x, drag_vector_y) = (
+                    self.pressed_pos_x - released_pos_x as f64,
+                    -1.0 * (self.pressed_pos_y - released_pos_y as f64),
+                );
+                info!("drag: ({}, {})", drag_vector_x, drag_vector_y);
+                self.mandelbrot.move_center(drag_vector_x, drag_vector_y);
+                self.mandelbrot.request_redraw();
+            }
+        }
+    }
+
+    fn update_zoom(&mut self) {
+        let (_scroll_x, scroll_y) = self.input.scroll_diff();
+        if scroll_y != 0.0 {
+            info!("scroll: {}", scroll_y);
+            self.mandelbrot.zoom(scroll_y as f64);
+            self.mandelbrot.request_redraw();
+        }
+
+        if self.input.key_pressed(KeyCode::ShiftLeft) {
+            self.shiftkey_pressed = true;
+        } else if self.input.key_released(KeyCode::ShiftLeft) {
+            self.shiftkey_pressed = false;
+        }
+
+        if self.input.key_pressed(KeyCode::AltLeft) {
+            self.altkey_pressed = true;
+        } else if self.input.key_released(KeyCode::AltLeft) {
+            self.altkey_pressed = false;
+        }
+
+        let calc_zoom_param = |direction: f64| {
+            if self.altkey_pressed {
+                (0.4 * direction, true)
+            } else if self.auto_zoom_param != 0.0 {
+                (0.0, true)
+            } else if self.shiftkey_pressed {
+                (0.1 * direction, false)
+            } else {
+                (3.0 * direction, false)
+            }
+        };
+
+        let (zoom_param, auto_zoom_update) = if self.input.key_pressed(KeyCode::PageUp) {
+            calc_zoom_param(1.0)
+        } else if self.input.key_pressed(KeyCode::PageDown) {
+            calc_zoom_param(-1.0)
+        } else {
+            (self.auto_zoom_param, false)
+        };
+        if zoom_param != 0.0 {
+            let zoom_result = self.mandelbrot.zoom(zoom_param);
+            if !zoom_result {
+                self.auto_zoom_param = 0.0;
+            }
+            self.mandelbrot.request_redraw();
+        }
+
+        if self.input.key_pressed(KeyCode::Escape) {
+            self.auto_zoom_param = 0.0;
+        } else if auto_zoom_update {
+            self.auto_zoom_param = zoom_param;
+        }
+    }
+
+    fn update_keyboard_move(&mut self) {
+        let (key_move, move_x, move_y) =
+            if self.input.key_pressed(KeyCode::ArrowUp) || self.input.key_pressed(KeyCode::KeyK) {
+                (true, 0.0, 10.0)
+            } else if self.input.key_pressed(KeyCode::ArrowDown)
+                || self.input.key_pressed(KeyCode::KeyJ)
+            {
+                (true, 0.0, -10.0)
+            } else if self.input.key_pressed(KeyCode::ArrowLeft)
+                || self.input.key_pressed(KeyCode::KeyH)
+            {
+                (true, -10.0, 0.0)
+            } else if self.input.key_pressed(KeyCode::ArrowRight)
+                || self.input.key_pressed(KeyCode::KeyL)
+            {
+                (true, 10.0, 0.0)
+            } else {
+                (false, 0.0, 0.0)
+            };
+
+        if key_move {
+            if let Some(window) = self.window.as_ref() {
+                let scale_factor = window.scale_factor();
+                let center_p_pos = PhysicalPosition::new(move_x, move_y);
+                let center_offset: LogicalPosition<f64> = center_p_pos.to_logical(scale_factor);
+                self.mandelbrot
+                    .move_center(center_offset.x, center_offset.y);
+                self.mandelbrot.request_redraw();
+            }
+        }
+    }
+
+    fn update_info(&mut self) {
+        if self.input.key_pressed(KeyCode::KeyI) {
+            self.mandelbrot.info = !self.mandelbrot.info;
+            self.mandelbrot.request_redraw();
+        }
+
+        if self.input.key_pressed(KeyCode::KeyD) {
+            println!();
+            println!("x: {}", self.mandelbrot.center_x);
+            println!("y: {}", self.mandelbrot.center_y);
+            println!("scale: {}", self.mandelbrot.scale);
+            println!(
+                "rendering time: {}.{:04}[sec]",
+                self.mandelbrot.rendering_time.as_secs(),
+                self.mandelbrot.rendering_time.subsec_nanos() / 1000000
+            );
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+
+        let window = Arc::new(Self::create_window(event_loop));
+        let window_size = window.inner_size();
+        let surface_texture =
+            SurfaceTexture::new(window_size.width, window_size.height, window.clone());
+        let pixels = Pixels::new(WINDOW_WIDTH, WINDOW_HEIGHT, surface_texture).unwrap();
+
+        self.window = Some(window);
+        self.pixels = Some(pixels);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if self.input.process_window_event(&event) {
+            self.render(event_loop);
+        }
+    }
+
+    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        self.input.process_device_event(&event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.update(event_loop);
+    }
+
+    fn new_events(&mut self, _: &ActiveEventLoop, _: StartCause) {
+        self.input.step();
+    }
+}
+
+fn main() -> Result<(), Error> {
+    env_logger::init();
+
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.run_app(&mut App::new()).unwrap();
+    Ok(())
 }
